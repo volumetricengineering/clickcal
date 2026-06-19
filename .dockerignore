@@ -1,0 +1,22 @@
+# Local virtualenv and caches
+.venv/
+__pycache__/
+*.py[oc]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Secrets and local config — never bake into the image
+.env
+
+# Tests and dev-only files (not needed at runtime)
+tests/
+
+# VCS and tooling
+.git/
+.gitignore
+.claude/
+
+# Docs and meta
+*.md
+!README.md
