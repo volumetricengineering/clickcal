@@ -1,0 +1,20 @@
+services:
+  clickcal:
+    build: .
+    image: clickcal
+    # Load CLICKCAL_* configuration (token, space id, feed token, etc.) from
+    # the local .env file. Copy .env.example to .env and fill it in first.
+    env_file:
+      - .env
+    # Pin the in-container port to 8000 (matching EXPOSE and the port mapping
+    # below) so a CLICKCAL_PORT in .env can't desync the published port.
+    environment:
+      CLICKCAL_PORT: "8000"
+      CLICKCAL_HOST: "0.0.0.0"
+    # Publish the service. Override the host port with CLICKCAL_HOST_PORT,
+    # e.g. `CLICKCAL_HOST_PORT=9000 docker compose up`.
+    ports:
+      - "${CLICKCAL_HOST_PORT:-8000}:8000"
+    restart: unless-stopped
+    # Uses the HEALTHCHECK defined in the Dockerfile (GET /healthz). Compose
+    # surfaces it via `docker compose ps` and can gate dependents on it.

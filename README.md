@@ -76,6 +76,26 @@ The image runs as a non-root user and ships a `HEALTHCHECK` against `/healthz`.
 Pass configuration via `--env-file .env` or individual `-e CLICKCAL_… ` flags;
 the `.env` file itself is excluded from the image.
 
+### Docker Compose
+
+A `docker-compose.yml` is provided. It builds the image, loads config from
+`.env`, and publishes the service:
+
+```bash
+cp .env.example .env   # fill in CLICKCAL_TOKEN, CLICKCAL_SPACE_ID, etc.
+docker compose up -d --build
+```
+
+The service listens on port 8000 by default. Override the host port with
+`CLICKCAL_HOST_PORT` (the in-container port stays 8000):
+
+```bash
+CLICKCAL_HOST_PORT=9000 docker compose up -d
+```
+
+`docker compose ps` shows health (from the image's `HEALTHCHECK`), and the
+container restarts automatically unless explicitly stopped.
+
 ## Configuration
 
 All settings are environment variables (or lines in `.env`), prefixed
