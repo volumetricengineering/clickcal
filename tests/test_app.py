@@ -23,8 +23,10 @@ def reset_cache(monkeypatch):
 def client(monkeypatch):
     calls = {"n": 0}
 
-    async def fake_generate(settings):
+    async def fake_generate(settings, *, include=None, exclude=None, exclude_multi_day=False):
         calls["n"] += 1
+        calls.setdefault("filters", []).append((include, exclude))
+        calls.setdefault("multi_day", []).append(exclude_multi_day)
         return b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"
 
     monkeypatch.setattr(app_module, "generate_ical", fake_generate)
@@ -56,6 +58,78 @@ def test_conditional_request_returns_304(client):
     assert second.status_code == 304
     assert second.content == b""
     assert second.headers["ETag"] == etag
+
+
+def test_include_exclude_query_params_flow_through(client):
+    c, calls = client
+    resp = c.get("/calendar.ics?include=Work,Personal&exclude=Backlog")
+    assert resp.status_code == 200
+    assert calls["filters"] == [(["Work", "Personal"], ["Backlog"])]
+
+
+def test_repeated_query_params_accumulate(client):
+    c, calls = client
+    c.get("/calendar.ics?include=Work&include=Personal,Ops")
+    assert calls["filters"] == [(["Work", "Personal", "Ops"], [])]
+
+
+def test_no_filters_passes_empty_lists(client):
+    c, calls = client
+    c.get("/calendar.ics")
+    assert calls["filters"] == [([], [])]
+
+
+def test_distinct_filters_are_cached_separately(client):
+    c, calls = client
+    c.get("/calendar.ics?include=Work")
+    c.get("/calendar.ics?include=Personal")
+    assert calls["n"] == 2  # different filters -> separate renders
+
+
+def test_same_filter_is_served_from_cache(client):
+    c, calls = client
+    c.get("/calendar.ics?include=Work")
+    c.get("/calendar.ics?include=Work")
+    assert calls["n"] == 1
+
+
+def test_filter_order_does_not_matter_for_cache(client):
+    c, calls = client
+    c.get("/calendar.ics?include=Work,Personal")
+    c.get("/calendar.ics?include=Personal,Work")
+    assert calls["n"] == 1  # order-independent cache key
+
+
+def test_exclude_multi_day_flag_flows_through(client):
+    c, calls = client
+    resp = c.get("/calendar.ics?exclude_multi_day=true")
+    assert resp.status_code == 200
+    assert calls["multi_day"] == [True]
+
+
+def test_exclude_multi_day_bare_flag_is_true(client):
+    c, calls = client
+    c.get("/calendar.ics?exclude_multi_day")
+    assert calls["multi_day"] == [True]
+
+
+def test_exclude_multi_day_defaults_false(client):
+    c, calls = client
+    c.get("/calendar.ics")
+    assert calls["multi_day"] == [False]
+
+
+def test_exclude_multi_day_off_value_is_false(client):
+    c, calls = client
+    c.get("/calendar.ics?exclude_multi_day=false")
+    assert calls["multi_day"] == [False]
+
+
+def test_exclude_multi_day_is_cached_separately(client):
+    c, calls = client
+    c.get("/calendar.ics")
+    c.get("/calendar.ics?exclude_multi_day=1")
+    assert calls["n"] == 2  # different flag -> separate render
 
 
 def test_healthz(client):

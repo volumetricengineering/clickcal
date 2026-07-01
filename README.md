@@ -42,6 +42,53 @@ http://<host>:8000/calendar.ics
 
 `GET /healthz` returns a basic health check.
 
+## Filtering lists per subscription
+
+By default the feed includes every list in the space (minus any configured in
+`CLICKCAL_EXCLUDED_LISTS`). You can further narrow a single feed URL with two
+query-string parameters, matched against list **names or ids** (names are
+case-insensitive):
+
+- `include` — keep **only** the given lists.
+- `exclude` — drop the given lists.
+
+Both accept comma-separated values and may be repeated; the following are
+equivalent:
+
+```
+http://<host>:8000/calendar.ics?include=Work,Personal
+http://<host>:8000/calendar.ics?include=Work&include=Personal
+```
+
+`exclude` is applied after `include`, and the server-wide
+`CLICKCAL_EXCLUDED_LISTS` always wins over a request that tries to include a
+banned list:
+
+```
+# only Work and Personal, but never Backlog even if named
+http://<host>:8000/calendar.ics?include=Work,Personal,Backlog&exclude=Ops
+```
+
+To drop tasks that span more than one day (multi-day ranges, e.g. a conference
+or a week-long task), add `exclude_multi_day`:
+
+```
+http://<host>:8000/calendar.ics?exclude_multi_day=true
+http://<host>:8000/calendar.ics?exclude_multi_day        # bare flag also works
+```
+
+Accepted true values are `true`, `1`, `yes`, `on`, or the bare flag (any case);
+anything else (or omitting it) keeps multi-day events. Single-day and due-only
+tasks are always kept.
+
+These all work on the token-protected URL too, and can be combined:
+
+```
+https://<host>/calendar/<token>.ics?include=Work&exclude_multi_day=1
+```
+
+Each distinct combination of filters is cached separately (see [Caching](#caching)).
+
 ## Making the feed private
 
 The feed is unauthenticated by default. To keep it private, set a secret
@@ -121,7 +168,9 @@ The whole feed is rebuilt from ClickUp at most once per `CLICKCAL_CACHE_TTL`
 seconds (default 5 minutes) and reused for all requests in between, so frequent
 calendar-client polling doesn't hammer the ClickUp API. A burst of concurrent
 requests triggers only a single rebuild, and if a refresh fails (e.g. ClickUp is
-down) the last good feed is served rather than an error.
+down) the last good feed is served rather than an error. Each distinct
+combination of the `include`, `exclude`, and `exclude_multi_day` query
+parameters is cached independently under the same TTL.
 
 Responses carry `ETag` and `Cache-Control` headers, so clients and proxies that
 support conditional requests get a `304 Not Modified` when the feed is unchanged.

@@ -37,6 +37,19 @@ def _is_timed(task: Task, tz: tzinfo) -> bool:
     return due > start
 
 
+def _is_multi_day(task: Task, tz: tzinfo) -> bool:
+    """Whether the task spans more than one local calendar day.
+
+    Requires both a start and a due; a single-point or due-only task covers one
+    day and is never multi-day. Timed same-day blocks are also single-day.
+    """
+    if task.start is None or task.due is None:
+        return False
+    start = task.start.astimezone(tz).date()
+    due = task.due.astimezone(tz).date()
+    return due > start
+
+
 def _add_event_times(event: Event, task: Task, tz: tzinfo) -> None:
     """Add DTSTART/DTEND to ``event``, all-day or timed as appropriate."""
     start_dt = task.start or task.due
@@ -64,25 +77,57 @@ def _add_event_times(event: Event, task: Task, tz: tzinfo) -> None:
 
 
 def filter_lists(
-    lists: list[ClickUpList], excluded: list[str]
+    lists: list[ClickUpList],
+    excluded: list[str],
+    *,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
 ) -> list[ClickUpList]:
-    """Drop lists whose id or (case-insensitive) name is in ``excluded``."""
-    excluded_ids = {item for item in excluded}
-    excluded_names = {item.casefold() for item in excluded}
+    """Select which lists to keep, matching each item by id or name.
+
+    Names are matched case-insensitively. Filters are applied in this order:
+
+    * ``excluded`` — the server-configured baseline; these lists are always
+      dropped.
+    * ``include`` — a per-request allow-list. When given (non-empty), only lists
+      matching it are kept; when omitted, all remaining lists are kept.
+    * ``exclude`` — a per-request deny-list applied last, dropping any matches.
+    """
+
+    def _matches(lst: ClickUpList, wanted: set[str]) -> bool:
+        return lst.id in wanted or lst.name.casefold() in wanted
+
+    def _as_set(items: list[str]) -> set[str]:
+        # Ids stay as-is; names are folded so name matches are case-insensitive.
+        return {item for item in items} | {item.casefold() for item in items}
+
+    excluded_set = _as_set(excluded)
+    include_set = _as_set(include) if include else None
+    exclude_set = _as_set(exclude) if exclude else set()
+
     return [
         lst
         for lst in lists
-        if lst.id not in excluded_ids and lst.name.casefold() not in excluded_names
+        if not _matches(lst, excluded_set)
+        and (include_set is None or _matches(lst, include_set))
+        and not _matches(lst, exclude_set)
     ]
 
 
-def build_calendar(tasks: list[Task], *, name: str, timezone: str = "UTC") -> bytes:
+def build_calendar(
+    tasks: list[Task],
+    *,
+    name: str,
+    timezone: str = "UTC",
+    exclude_multi_day: bool = False,
+) -> bytes:
     """Build an iCal feed from tasks that have a usable date.
 
     Tasks with neither a start nor a due date are skipped, since a calendar
     event needs at least one point in time. ``timezone`` is the IANA name of the
     ClickUp workspace timezone, used to recognize all-day dates and to render
-    timed events in their local zone.
+    timed events in their local zone. When ``exclude_multi_day`` is set, tasks
+    spanning more than one local calendar day are skipped.
     """
     tz = ZoneInfo(timezone)
 
@@ -93,6 +138,8 @@ def build_calendar(tasks: list[Task], *, name: str, timezone: str = "UTC") -> by
 
     for task in tasks:
         if task.start is None and task.due is None:
+            continue
+        if exclude_multi_day and _is_multi_day(task, tz):
             continue
 
         event = Event()

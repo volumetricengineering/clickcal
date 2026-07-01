@@ -35,45 +35,65 @@ def _etag(body: bytes) -> str:
     return f'"{hashlib.sha256(body).hexdigest()[:16]}"'
 
 
+@dataclass
+class _Entry:
+    """The cached snapshot for one feed variant plus its own refresh lock."""
+
+    lock: asyncio.Lock
+    snapshot: Snapshot | None = None
+    fetched_at: float = 0.0
+
+
 class FeedCache:
-    """Caches one rendered feed snapshot with a TTL and stampede protection."""
+    """Caches rendered feed snapshots with a TTL and stampede protection.
+
+    Snapshots are keyed so that different feed variants (e.g. different
+    include/exclude list filters) are cached independently. The default key of
+    ``""`` covers the unfiltered feed.
+    """
 
     def __init__(self, ttl: float, *, monotonic: Callable[[], float] = time.monotonic) -> None:
         self._ttl = ttl
         self._monotonic = monotonic
-        self._lock = asyncio.Lock()
-        self._snapshot: Snapshot | None = None
-        self._fetched_at = 0.0
+        self._entries: dict[str, _Entry] = {}
 
-    def _is_fresh(self) -> bool:
+    def _entry(self, key: str) -> _Entry:
+        entry = self._entries.get(key)
+        if entry is None:
+            entry = _Entry(lock=asyncio.Lock())
+            self._entries[key] = entry
+        return entry
+
+    def _is_fresh(self, entry: _Entry) -> bool:
         return (
-            self._snapshot is not None
+            entry.snapshot is not None
             and self._ttl > 0
-            and self._monotonic() - self._fetched_at < self._ttl
+            and self._monotonic() - entry.fetched_at < self._ttl
         )
 
-    async def get(self, build: Builder) -> Snapshot:
-        """Return a fresh snapshot, rebuilding via ``build`` only when needed.
+    async def get(self, build: Builder, *, key: str = "") -> Snapshot:
+        """Return a fresh snapshot for ``key``, rebuilding only when needed.
 
-        A burst of concurrent callers triggers at most one ``build``; the rest
-        wait on the lock and reuse the result. If ``build`` raises and a
-        previous snapshot exists, that stale snapshot is returned instead.
+        A burst of concurrent callers for the same key triggers at most one
+        ``build``; the rest wait on the lock and reuse the result. If ``build``
+        raises and a previous snapshot exists, that stale snapshot is returned.
         """
-        if self._is_fresh():
-            return self._snapshot  # type: ignore[return-value]
+        entry = self._entry(key)
+        if self._is_fresh(entry):
+            return entry.snapshot  # type: ignore[return-value]
 
-        async with self._lock:
+        async with entry.lock:
             # Another caller may have refreshed while we waited for the lock.
-            if self._is_fresh():
-                return self._snapshot  # type: ignore[return-value]
+            if self._is_fresh(entry):
+                return entry.snapshot  # type: ignore[return-value]
 
             try:
                 body = await build()
             except Exception:
-                if self._snapshot is not None:
-                    return self._snapshot  # serve stale rather than fail
+                if entry.snapshot is not None:
+                    return entry.snapshot  # serve stale rather than fail
                 raise
 
-            self._snapshot = Snapshot(body=body, etag=_etag(body))
-            self._fetched_at = self._monotonic()
-            return self._snapshot
+            entry.snapshot = Snapshot(body=body, etag=_etag(body))
+            entry.fetched_at = self._monotonic()
+            return entry.snapshot

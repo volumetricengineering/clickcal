@@ -21,13 +21,49 @@ def _task(**kwargs) -> Task:
     return Task(**base)  # type: ignore[arg-type]
 
 
-def test_filter_lists_by_id_and_name():
-    lists = [
+def _lists():
+    return [
         ClickUpList(id="1", name="Work"),
         ClickUpList(id="2", name="Backlog"),
         ClickUpList(id="3", name="Personal"),
     ]
-    result = filter_lists(lists, ["2", "personal"])
+
+
+def test_filter_lists_by_id_and_name():
+    result = filter_lists(_lists(), ["2", "personal"])
+    assert [lst.name for lst in result] == ["Work"]
+
+
+def test_filter_lists_include_only_keeps_matches():
+    # An include filter narrows the feed to just the named lists.
+    result = filter_lists(_lists(), [], include=["Work", "Personal"])
+    assert [lst.name for lst in result] == ["Work", "Personal"]
+
+
+def test_filter_lists_include_matches_by_id_and_is_case_insensitive():
+    result = filter_lists(_lists(), [], include=["2", "PERSONAL"])
+    assert [lst.name for lst in result] == ["Backlog", "Personal"]
+
+
+def test_filter_lists_empty_include_keeps_all():
+    # The default (no include) keeps every list not otherwise excluded.
+    result = filter_lists(_lists(), [], include=[])
+    assert [lst.name for lst in result] == ["Work", "Backlog", "Personal"]
+
+
+def test_filter_lists_exclude_drops_matches():
+    result = filter_lists(_lists(), [], exclude=["backlog"])
+    assert [lst.name for lst in result] == ["Work", "Personal"]
+
+
+def test_filter_lists_configured_exclusion_always_applies():
+    # A configured exclusion wins even if the request tries to include it.
+    result = filter_lists(_lists(), ["Backlog"], include=["Work", "Backlog"])
+    assert [lst.name for lst in result] == ["Work"]
+
+
+def test_filter_lists_exclude_overrides_include():
+    result = filter_lists(_lists(), [], include=["Work", "Personal"], exclude=["Personal"])
     assert [lst.name for lst in result] == ["Work"]
 
 
@@ -106,6 +142,44 @@ def test_explicit_time_flag_forces_timed():
         timezone="UTC",
     ).decode()
     assert "DTSTART;VALUE=DATE:" not in ical
+
+
+def test_exclude_multi_day_drops_multi_day_ranges():
+    start = datetime(2026, 6, 8, 2, 0, tzinfo=timezone.utc)
+    due = datetime(2026, 6, 11, 2, 0, tzinfo=timezone.utc)
+    ical = build_calendar(
+        [_task(start=start, due=due)],
+        name="Test",
+        timezone="UTC",
+        exclude_multi_day=True,
+    ).decode()
+    assert "BEGIN:VEVENT" not in ical
+
+
+def test_exclude_multi_day_keeps_single_day_events():
+    # A same-day timed block is not multi-day and should survive the filter.
+    ical = build_calendar(
+        [_task()], name="Test", timezone="UTC", exclude_multi_day=True
+    ).decode()
+    assert "BEGIN:VEVENT" in ical
+
+
+def test_exclude_multi_day_keeps_due_only_events():
+    due = datetime(2026, 10, 20, 2, 0, tzinfo=timezone.utc)
+    ical = build_calendar(
+        [_task(start=None, due=due)],
+        name="Test",
+        timezone="UTC",
+        exclude_multi_day=True,
+    ).decode()
+    assert "BEGIN:VEVENT" in ical
+
+
+def test_multi_day_kept_by_default():
+    start = datetime(2026, 6, 8, 2, 0, tzinfo=timezone.utc)
+    due = datetime(2026, 6, 11, 2, 0, tzinfo=timezone.utc)
+    ical = build_calendar([_task(start=start, due=due)], name="Test", timezone="UTC").decode()
+    assert "BEGIN:VEVENT" in ical
 
 
 def _description_of(ical: str) -> str:

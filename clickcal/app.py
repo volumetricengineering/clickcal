@@ -27,11 +27,24 @@ def _get_cache(settings: Settings) -> FeedCache:
     return _feed_cache
 
 
-async def generate_ical(settings: Settings) -> bytes:
-    """Fetch tasks from the configured space and render the calendar."""
+async def generate_ical(
+    settings: Settings,
+    *,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+    exclude_multi_day: bool = False,
+) -> bytes:
+    """Fetch tasks from the configured space and render the calendar.
+
+    ``include``/``exclude`` are optional per-request list filters (by list name
+    or id) layered on top of the server-configured ``excluded_lists``. When
+    ``exclude_multi_day`` is set, tasks spanning more than one day are dropped.
+    """
     async with ClickUpClient(settings.token) as client:
         lists = await client.get_space_lists(settings.space_id)
-        included = filter_lists(lists, settings.excluded_lists)
+        included = filter_lists(
+            lists, settings.excluded_lists, include=include, exclude=exclude
+        )
 
         task_groups = await asyncio.gather(
             *(
@@ -46,7 +59,10 @@ async def generate_ical(settings: Settings) -> bytes:
 
     tasks = [task for group in task_groups for task in group]
     return build_calendar(
-        tasks, name=settings.calendar_name, timezone=settings.timezone
+        tasks,
+        name=settings.calendar_name,
+        timezone=settings.timezone,
+        exclude_multi_day=exclude_multi_day,
     )
 
 
@@ -63,11 +79,49 @@ def _authorize(settings: Settings, token: str | None) -> None:
         raise HTTPException(status_code=404, detail="Not Found")
 
 
+def _parse_list_filter(request: Request, param: str) -> list[str]:
+    """Parse a repeatable, comma-separated list filter from the query string.
+
+    ``?include=A,B&include=C`` and ``?include=A&include=B&include=C`` both yield
+    ``["A", "B", "C"]``. Blank entries are dropped and surrounding whitespace is
+    trimmed.
+    """
+    values: list[str] = []
+    for raw in request.query_params.getlist(param):
+        values.extend(item.strip() for item in raw.split(",") if item.strip())
+    return values
+
+
+def _parse_bool_flag(request: Request, param: str) -> bool:
+    """Parse a boolean query flag. Present-but-empty (``?flag``) counts as true;
+    ``true/1/yes/on`` (any case) are true, everything else is false."""
+    raw = request.query_params.get(param)
+    if raw is None:
+        return False
+    return raw.strip().casefold() in ("", "1", "true", "yes", "on")
+
+
 async def _serve_feed(request: Request, settings: Settings) -> Response:
     cache = _get_cache(settings)
 
+    include = _parse_list_filter(request, "include")
+    exclude = _parse_list_filter(request, "exclude")
+    exclude_multi_day = _parse_bool_flag(request, "exclude_multi_day")
+    # Cache each variant separately. Sort the list filters so equivalent
+    # (order-independent) filters share one entry; the default feed keeps its
+    # own key.
+    cache_key = repr((sorted(include), sorted(exclude), exclude_multi_day))
+
     try:
-        snapshot = await cache.get(lambda: generate_ical(settings))
+        snapshot = await cache.get(
+            lambda: generate_ical(
+                settings,
+                include=include,
+                exclude=exclude,
+                exclude_multi_day=exclude_multi_day,
+            ),
+            key=cache_key,
+        )
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
